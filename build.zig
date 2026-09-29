@@ -285,6 +285,7 @@ fn addTest(
         .optimize = optimize,
     });
     addCompatImports(platform_linux_cgroup, compat_module, net_module);
+    platform_linux_cgroup.addImport("debug", debug_module);
     tests.root_module.addImport("platform_linux_cgroup", platform_linux_cgroup);
     addCompatImports(platform_linux, compat_module, net_module);
     platform_linux.addImport("debug", debug_module);

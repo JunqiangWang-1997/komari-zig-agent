@@ -33,6 +33,7 @@
 const std = @import("std");
 const compat = @import("compat");
 const common = @import("common.zig");
+const debug = @import("debug");
 
 /// cgroup v2 统一挂载点。
 pub const cgroup_root = "/sys/fs/cgroup";
@@ -152,8 +153,13 @@ fn readCgroupFile(name: []const u8, buf: []u8) ?[]const u8 {
 /// 当前是否处于**有限额**的 cgroup。裸机与无限额 cgroup 均为 `max`，返回 false。
 pub fn cgroupIsLimited() bool {
     var buf: [64]u8 = undefined;
-    const bytes = readCgroupFile("memory.max", &buf) orelse return false;
-    return parseByteLimit(bytes) != 0;
+    const bytes = readCgroupFile("memory.max", &buf) orelse {
+        debug.log("cgroup: {s}/memory.max unreadable, staying on /proc metrics", .{cgroup_root});
+        return false;
+    };
+    const limit = parseByteLimit(bytes);
+    debug.log("cgroup: memory.max={s} limited={}", .{ std.mem.trim(u8, bytes, " \t\r\n"), limit != 0 });
+    return limit != 0;
 }
 
 /// 读取容器内存采样。`total` 为 0 表示无限制或不可用。
@@ -209,6 +215,10 @@ var previous_cpu: ?CpuDelta = null;
 /// 首次调用只建立基线并返回 null，因此切换到本路径的第一帧会回退到
 /// `/proc/stat`，下一帧起即为容器视角。
 pub fn cpuUsagePercent(host_cores: u64) ?f64 {
+    // 与内存侧保持同一道门控：裸机与无限额 cgroup 不启用，避免改变非容器用户
+    // 的 CPU 上报口径。宿主机的 `cpu.stat` 虽可读且数值与 `/proc/stat` 大致
+    // 等价，但那是宿主的累计算法，不是容器应上报的口径。
+    if (!cgroupIsLimited()) return null;
     var stat_buf: [1024]u8 = undefined;
     const usage = blk: {
         const bytes = readCgroupFile("cpu.stat", &stat_buf) orelse return null;
@@ -235,16 +245,28 @@ pub fn cpuUsagePercent(host_cores: u64) ?f64 {
 
     const used = @as(f64, @floatFromInt(usage - prev.usage_usec));
     const elapsed = @as(f64, @floatFromInt(elapsed_us));
-    const percent = (used / elapsed / effectiveCores(quota.max_cores, host_cores)) * 100.0;
-    return if (percent < 0.001) 0.001 else percent;
+    const cores = effectiveCores(quota.max_cores, host_cores);
+    const percent = (used / elapsed / cores) * 100.0;
+    const result = if (percent < 0.001) 0.001 else percent;
+    debug.log("cgroup: cpu usage={d:.3}% (delta={d}us elapsed={d}us cores={d:.2} quota_cores={d:.2})", .{
+        result, usage - prev.usage_usec, elapsed_us, cores, quota.max_cores,
+    });
+    return result;
 }
 
 /// 受限 cgroup 的内存。返回 null 表示未启用或不可读，调用方应回退 `/proc`。
 pub fn readLimitedRam(include_cache: bool) ?common.MemInfo {
     if (!cgroupIsLimited()) return null;
     const sample = readMemSample();
-    if (sample.current == 0) return null;
-    return .{ .total = sample.total, .used = memUsed(sample, include_cache) };
+    if (sample.current == 0) {
+        debug.log("cgroup: memory.current unreadable, falling back to /proc/meminfo", .{});
+        return null;
+    }
+    const ram = common.MemInfo{ .total = sample.total, .used = memUsed(sample, include_cache) };
+    debug.log("cgroup: ram total={d} used={d} (current={d} file={d} shmem={d} include_cache={})", .{
+        ram.total, ram.used, sample.current, sample.file, sample.shmem, include_cache,
+    });
+    return ram;
 }
 
 /// 受限 cgroup 的 swap。返回 null 表示**不在**受限 cgroup 中，调用方应回退 `/proc`。
