@@ -2,6 +2,13 @@ const std = @import("std");
 const common = @import("../platform/common.zig");
 
 /// JSON serialization helpers for periodic runtime snapshots.
+///
+/// Both functions only *borrow* `snap`: they never free `snap.gpu_json`. The
+/// snapshot carries GPU JSON owned by `std.heap.page_allocator`, so whoever
+/// called `provider.snapshotWithOptions` must free it exactly once after the
+/// last serializer call, no matter which serializer was used. Keeping the free
+/// out of this module stops the ownership contract from being split between a
+/// `defer` here and a caller-side flag.
 pub fn writeReportJson(writer: anytype, snap: common.Snapshot) !void {
     var usage = snap.cpu.usage;
     if (usage <= 0.001) usage = 0.001;
@@ -16,7 +23,6 @@ pub fn writeReportJson(writer: anytype, snap: common.Snapshot) !void {
 }
 
 pub fn allocReportJson(allocator: std.mem.Allocator, snap: common.Snapshot) ![]const u8 {
-    defer if (snap.gpu_json.len != 0) std.heap.page_allocator.free(snap.gpu_json);
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
     try writeReportJson(&out.writer, snap);
