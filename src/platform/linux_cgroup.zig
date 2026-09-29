@@ -182,27 +182,42 @@ pub fn readMemSample() MemSample {
     return .{ .total = total, .current = current, .file = stat.file, .shmem = stat.shmem };
 }
 
+/// cgroup v2 内存控制器的 swap 记账文件名。
+///
+/// 注意带 `memory.` 前缀：cgroup v2 里是 `memory.swap.current` /
+/// `memory.swap.max`，**不存在**裸的 `swap.current` / `swap.max`（那是
+/// 提案阶段的命名，未落地）。写成裸名字会静默读到 FileNotFound。
+/// 该组接口自 Linux 5.7 引入。
+const swap_current_file = "memory.swap.current";
+const swap_max_file = "memory.swap.max";
+
 /// 容器 swap 采样。
 ///
-/// `max` 为 0 表示 `swap.max` 是 `max`（无限制）或不可读。注意此时
+/// `max` 为 0 表示 `memory.swap.max` 是 `max`（无限制）或不可读。注意此时
 /// `current` **依然有意义**：它是容器自身已换出的量，不受上限影响。
 pub const SwapSample = struct {
     max: u64 = 0,
     current: u64 = 0,
 };
 
-/// 读取容器 swap 采样。返回 null 表示 `swap.current` 不可读。
+/// 读取容器 swap 采样。返回 null 表示 `memory.swap.current` 不可读。
 pub fn readSwapSample() ?SwapSample {
     var cur_buf: [64]u8 = undefined;
     const current = blk: {
-        const bytes = readCgroupFile("swap.current", &cur_buf) orelse return null;
+        const bytes = readCgroupFile(swap_current_file, &cur_buf) orelse {
+            debug.log("cgroup: {s} unreadable, no container-level swap visibility", .{swap_current_file});
+            return null;
+        };
         break :blk parseByteLimit(bytes);
     };
     var max_buf: [64]u8 = undefined;
     const max = blk: {
-        const bytes = readCgroupFile("swap.max", &max_buf) orelse break :blk @as(u64, 0);
+        const bytes = readCgroupFile(swap_max_file, &max_buf) orelse break :blk @as(u64, 0);
         break :blk parseByteLimit(bytes);
     };
+    debug.log("cgroup: {s}={d} {s}={s}", .{
+        swap_current_file, current, swap_max_file, if (max == 0) "max" else "finite",
+    });
     return .{ .max = max, .current = current };
 }
 
@@ -277,11 +292,18 @@ pub fn readLimitedRam(include_cache: bool) ?common.MemInfo {
     return ram;
 }
 
-/// 受限 cgroup 的 swap。返回 null 表示**不在**受限 cgroup 中，调用方应回退 `/proc`。
+/// 受限 cgroup 的 swap。返回 null 表示拿不到容器级 swap 可见性，调用方应
+/// 回退 `/proc/meminfo`。
 ///
-/// `swap.max` 有限额时直接以它为 total；`swap.max` 为 `max`（默认）时返回
-/// `total = 0` 而 `used = swap.current`，由调用方决定上限取什么——因为此时
-/// 容器没有属于自己的 swap 预算，但已换出量是真实的容器级数值，不该被抹成 0。
+/// 三种情形：
+/// * `memory.swap.max` 有限额 -> 以它为 total，`used` 取容器自身
+///   `memory.swap.current`。
+/// * `memory.swap.max` 为 `max`（默认）-> `total = 0`、`used` 取
+///   `memory.swap.current`，由调用方决定上限取什么。容器没有属于自己的 swap
+///   预算，但已换出量是真实的容器级数值，不该被抹成 0。
+/// * `memory.swap.current` 不可读 -> 返回 null。宁可回退到宿主
+///   `/proc/meminfo` 的 swap，也不要上报 0/0——后者会让面板看起来像「本机
+///   完全没有 swap」，是明确的错误信息。
 pub fn readLimitedSwap() ?common.MemInfo {
     if (!cgroupIsLimited()) return null;
     const sample = readSwapSample() orelse return null;

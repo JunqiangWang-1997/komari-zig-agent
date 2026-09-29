@@ -1792,9 +1792,11 @@ fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
     return parseMemInfo(bytes, mode);
 }
 
-/// BasicInfo 路径的 swap 总量。容器内取 cgroup 限额。
+/// BasicInfo 路径的 swap 总量。容器内取 cgroup 限额，不可见时回退 `/proc/meminfo`。
 fn swapInfo() !common.MemInfo {
-    if (linux_cgroup.readLimitedSwap()) |swap| return try resolveSwapTotal(swap);
+    if (linux_cgroup.cgroupIsLimited()) {
+        if (linux_cgroup.readLimitedSwap()) |swap| return try resolveSwapTotal(swap);
+    }
     return swapInfoWithRoot("");
 }
 
@@ -1811,8 +1813,15 @@ fn resolveSwapTotal(swap: common.MemInfo) !common.MemInfo {
 }
 
 /// 受限 cgroup 内的 swap 采样。
+///
+/// `swap.current` 不可读时（Linux < 5.7 等）回退到宿主机 `/proc/meminfo`。
+/// 容器内确实看不到 swap 总量，但报 0/0 会让面板显示「完全没有 swap」，
+/// 那是不实信息；宿主机的数值至少是这台机器真实的 swap 状况。
 fn containerSwapInfo() !common.MemInfo {
-    const swap = linux_cgroup.readLimitedSwap() orelse return .{};
+    const swap = linux_cgroup.readLimitedSwap() orelse {
+        debug.log("cgroup: no container-level swap visibility, falling back to host /proc/meminfo swap", .{});
+        return swapInfoWithRoot("");
+    };
     return resolveSwapTotal(swap);
 }
 
