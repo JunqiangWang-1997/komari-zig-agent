@@ -15,6 +15,16 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return impl.basicInfo(allocator);
 }
 
+/// BasicInfo with sampling options, so the node-detail payload uses the same
+/// `host_proc` / memory-mode semantics as the periodic report.
+///
+/// Platforms that have not been ported to the options chain fall back to the
+/// plain `basicInfo`, keeping BSD/macOS/Windows behaviour unchanged.
+pub fn basicInfoWithOptions(allocator: std.mem.Allocator, options: common.SnapshotOptions) !common.BasicInfo {
+    if (@hasDecl(impl, "basicInfoWithOptions")) return impl.basicInfoWithOptions(allocator, options);
+    return impl.basicInfo(allocator);
+}
+
 pub fn snapshot() !common.Snapshot {
     return impl.snapshot(.{});
 }

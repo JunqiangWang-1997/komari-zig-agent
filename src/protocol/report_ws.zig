@@ -28,7 +28,8 @@ var v2_ack_mutex: compat.Mutex = .{};
 var v2_ack_event_ids: std.ArrayList([]const u8) = .empty;
 var v2_seen_event_ids: std.ArrayList([]const u8) = .empty;
 
-fn snapshotOptions(cfg: config.Config) common.SnapshotOptions {
+/// Map config to the platform sampling options shared by report and BasicInfo.
+pub fn snapshotOptions(cfg: config.Config) common.SnapshotOptions {
     return .{
         .include_nics = cfg.include_nics,
         .exclude_nics = cfg.exclude_nics,

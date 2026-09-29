@@ -143,7 +143,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.writeAll("shutting down gracefully...\n");
 }
 
-
 fn refreshAutoDiscoveryAfterUnauthorized(
     config_allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -231,7 +230,7 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
     defer stdout.flush() catch {};
     debug.log("starting basic info collection (allow_external_ip_lookup={})", .{allow_external_ip_lookup});
-    var info = try provider.basicInfo(scratch);
+    var info = try provider.basicInfoWithOptions(scratch, report_ws.snapshotOptions(cfg));
     debug.log("basic info collected: local_ipv4={s} local_ipv6={s}", .{ info.ipv4, info.ipv6 });
     try applyIpConfig(scratch, cfg, &info, allow_external_ip_lookup);
     if (basic_info_flow.shouldDeferForPublicIPv4(
@@ -284,7 +283,7 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config, start_immedia
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
-        var info = provider.basicInfo(scratch) catch {
+        var info = provider.basicInfoWithOptions(scratch, report_ws.snapshotOptions(cfg)) catch {
             continue;
         };
         applyIpConfig(scratch, cfg, &info, true) catch {};

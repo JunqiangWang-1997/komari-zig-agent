@@ -85,7 +85,19 @@ const CachedProcessSample = struct {
     timestamp_ms: i64,
 };
 
+/// 默认参数的 BasicInfo，等价于 `basicInfoWithOptions(allocator, .{})`。
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
+    return basicInfoWithOptions(allocator, .{});
+}
+
+/// BasicInfo 采集，接入 `SnapshotOptions` 以保证与周期上报口径一致。
+///
+/// 此前 `mem_total` 走的是硬编码 `include_cache=false` 的 `memInfo()`，而
+/// 周期上报走 `memInfoWithOptions(options)`。两处口径分叉，且 `basicInfo`
+/// 拿不到调用方的 `host_proc` 与内存模式设置。当前 `BasicInfo` 只取
+/// `.total`（与 cache 无关），一旦有人用到 `used` 就会立刻暴露不一致，
+/// 故统一到 options 链。
+pub fn basicInfoWithOptions(allocator: std.mem.Allocator, options: common.SnapshotOptions) !common.BasicInfo {
     var info = common.BasicInfo{
         .cpu = .{
             .name = try cpuName(allocator),
@@ -96,8 +108,8 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
         },
         .os_name = try osName(allocator),
         .kernel_version = try readFirstLine(allocator, "/proc/sys/kernel/osrelease"),
-        .mem_total = (try memInfo()).total,
-        .swap_total = (try swapInfo()).total,
+        .mem_total = (try memInfoWithOptions(options)).total,
+        .swap_total = (try swapInfoWithOptions(options)).total,
         .disk_total = (try diskInfo()).total,
         .gpu_name = try gpuName(allocator),
         .virtualization = try virtualization(allocator),
@@ -1694,17 +1706,12 @@ fn isNumericCpuValue(value: []const u8) bool {
     return value.len != 0;
 }
 
-/// BasicInfo 路径的内存总量。容器内取 cgroup 限额，避免节点详情显示宿主机规格。
-fn memInfo() !common.MemInfo {
-    if (linux_cgroup.readLimitedRam(false)) |ram| return ram;
-    return memInfoFromPath("/proc/meminfo", .{});
-}
-
 pub const MemMode = struct {
     include_cache: bool = false,
     report_raw_used: bool = false,
 };
 
+/// 内存总量。容器内优先取 cgroup 限额，避免节点详情显示宿主机规格。
 fn memInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
     if (options.host_proc.len == 0) {
         if (linux_cgroup.readLimitedRam(options.memory_include_cache)) |ram| return ram;
@@ -1792,12 +1799,15 @@ fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
     return parseMemInfo(bytes, mode);
 }
 
-/// BasicInfo 路径的 swap 总量。容器内取 cgroup 限额，不可见时回退 `/proc/meminfo`。
-fn swapInfo() !common.MemInfo {
-    if (linux_cgroup.cgroupIsLimited()) {
+/// swap 总量。容器内取 cgroup 限额，不可见时回退 `/proc/meminfo`。
+///
+/// `host_proc` 非空时跳过 cgroup，与 `memInfoWithOptions` 保持一致：调用方
+/// 显式指定了其他 `/proc`，就该尊重其意图。
+fn swapInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
+    if (options.host_proc.len == 0 and linux_cgroup.cgroupIsLimited()) {
         if (linux_cgroup.readLimitedSwap()) |swap| return try resolveSwapTotal(swap);
     }
-    return swapInfoWithRoot("");
+    return swapInfoWithRoot(options.host_proc);
 }
 
 /// 受限 cgroup 内的 swap 上限解析。
