@@ -18,6 +18,15 @@ reviews:
     - "!zig-out/**"
     - "!**/zig-out/**"
   path_instructions:
+    - path: "**"
+      instructions: |
+        Review 前必须阅读并遵守根目录 AGENTS.md，AGENTS.md 是本项目的开发与评审约束来源。
+        Review 时重点检查：
+        1. 协议兼容性：严禁新增、修改、重命名或省略对外通信（HTTP/WS/JSON-RPC）字段，必须严格对齐协议规范。
+        2. Linux 热路径禁止 sleep：指标采集必须基于时间戳差值计算，采样热路径绝不允许调用 sleep() 阻塞。
+        3. 跨平台构建矩阵：修改平台实现或构建配置时，绝不能破坏 Linux 11 架构及 FreeBSD、macOS、Windows 的 20 目标构建矩阵。
+        4. 网络错误不能导致 crash loop：主循环与常规上报路径上的网络错误严禁抛出致命退出，防止 init 守护拉起崩溃循环。
+        5. 文档注释覆盖率要求：生产源码（src/**/*.zig，排除测试）必须包含 //! 或 /// 文档注释，满足 >= 80% 覆盖率门槛。
     - path: "src/**/*.zig"
       instructions: |
         Zig 0.16 Komari agent，协议与字段必须对齐官方 Go agent 1.2.60。不要发明、重命名或省略上报/控制字段。
