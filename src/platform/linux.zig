@@ -1739,7 +1739,7 @@ fn memAndSwapInfoWithOptions(options: common.SnapshotOptions) !MemSwapInfo {
     // 的 1.89GB。`host_proc` 非空时尊重调用方指定的 `/proc`。
     if (options.host_proc.len == 0) {
         if (linux_cgroup.readLimitedRam(options.memory_include_cache)) |ram| {
-            return .{ .ram = ram, .swap = linux_cgroup.readLimitedSwap() orelse common.MemInfo{} };
+            return .{ .ram = ram, .swap = try containerSwapInfo() };
         }
     }
     var buf: [16 * 1024]u8 = undefined;
@@ -1794,8 +1794,26 @@ fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
 
 /// BasicInfo 路径的 swap 总量。容器内取 cgroup 限额。
 fn swapInfo() !common.MemInfo {
-    if (linux_cgroup.readLimitedSwap()) |swap| return swap;
+    if (linux_cgroup.readLimitedSwap()) |swap| return try resolveSwapTotal(swap);
     return swapInfoWithRoot("");
+}
+
+/// 受限 cgroup 内的 swap 上限解析。
+///
+/// `swap.max` 有限额时 cgroup 已给出容器自己的预算，直接采用；当其为 `max`
+/// （默认）时容器没有独立 swap 预算，但 `used` 仍是真实的容器级换出量，
+/// 此时以宿主机 swap 总量作为上限上报。若直接报 0，容器一旦发生换出，
+/// 面板上就完全看不到这一信息。
+fn resolveSwapTotal(swap: common.MemInfo) !common.MemInfo {
+    if (swap.total != 0) return swap;
+    const host = try swapInfoWithRoot("");
+    return .{ .total = host.total, .used = @min(swap.used, host.total) };
+}
+
+/// 受限 cgroup 内的 swap 采样。
+fn containerSwapInfo() !common.MemInfo {
+    const swap = linux_cgroup.readLimitedSwap() orelse return .{};
+    return resolveSwapTotal(swap);
 }
 
 fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {

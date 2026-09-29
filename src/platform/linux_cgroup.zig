@@ -182,20 +182,28 @@ pub fn readMemSample() MemSample {
     return .{ .total = total, .current = current, .file = stat.file, .shmem = stat.shmem };
 }
 
-/// 读取容器 swap 采样。`swap.max` 为 `max`（无限制）时 total 为 0，
-/// 返回值即全 0 的 `common.MemInfo`。
-pub fn readSwapSample() common.MemInfo {
+/// 容器 swap 采样。
+///
+/// `max` 为 0 表示 `swap.max` 是 `max`（无限制）或不可读。注意此时
+/// `current` **依然有意义**：它是容器自身已换出的量，不受上限影响。
+pub const SwapSample = struct {
+    max: u64 = 0,
+    current: u64 = 0,
+};
+
+/// 读取容器 swap 采样。返回 null 表示 `swap.current` 不可读。
+pub fn readSwapSample() ?SwapSample {
+    var cur_buf: [64]u8 = undefined;
+    const current = blk: {
+        const bytes = readCgroupFile("swap.current", &cur_buf) orelse return null;
+        break :blk parseByteLimit(bytes);
+    };
     var max_buf: [64]u8 = undefined;
-    const total = blk: {
+    const max = blk: {
         const bytes = readCgroupFile("swap.max", &max_buf) orelse break :blk @as(u64, 0);
         break :blk parseByteLimit(bytes);
     };
-    if (total == 0) return .{};
-
-    var cur_buf: [64]u8 = undefined;
-    var current: u64 = 0;
-    if (readCgroupFile("swap.current", &cur_buf)) |bytes| current = parseByteLimit(bytes);
-    return .{ .total = total, .used = @min(current, total) };
+    return .{ .max = max, .current = current };
 }
 
 // ---------------------------------------------------------------------------
@@ -271,10 +279,16 @@ pub fn readLimitedRam(include_cache: bool) ?common.MemInfo {
 
 /// 受限 cgroup 的 swap。返回 null 表示**不在**受限 cgroup 中，调用方应回退 `/proc`。
 ///
-/// `swap.max` 默认为 `max`（无限额），此时返回全 0：容器没有属于自己的 swap
-/// 预算，给 32MiB 内存的容器报出宿主机数 GB swap 是自相矛盾的数据。宿主机的
-/// swap 对容器不可计量，故此处不取。
+/// `swap.max` 有限额时直接以它为 total；`swap.max` 为 `max`（默认）时返回
+/// `total = 0` 而 `used = swap.current`，由调用方决定上限取什么——因为此时
+/// 容器没有属于自己的 swap 预算，但已换出量是真实的容器级数值，不该被抹成 0。
 pub fn readLimitedSwap() ?common.MemInfo {
     if (!cgroupIsLimited()) return null;
-    return readSwapSample();
+    const sample = readSwapSample() orelse return null;
+    if (sample.max != 0) {
+        debug.log("cgroup: swap max={d} current={d} (swap.max 有限额)", .{ sample.max, sample.current });
+        return .{ .total = sample.max, .used = @min(sample.current, sample.max) };
+    }
+    debug.log("cgroup: swap.max=max current={d} (无限额，total 交由调用方决定)", .{sample.current});
+    return .{ .total = 0, .used = sample.current };
 }
