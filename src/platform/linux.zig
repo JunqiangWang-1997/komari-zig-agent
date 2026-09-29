@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
+const linux_cgroup = @import("linux_cgroup.zig");
 const gpu = @import("gpu.zig");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
@@ -1400,6 +1401,11 @@ fn sampleNetworkCounters(options: common.SnapshotOptions) !common.NetworkInfo {
 }
 
 fn cpuUsage(host_proc: []const u8) !f64 {
+    // 受限 cgroup 优先：`/proc/stat` 是宿主机全局视图，容器里会高估。
+    // `host_proc` 非空说明调用方显式要读别的 `/proc`，此时尊重其意图。
+    if (host_proc.len == 0) {
+        if (linux_cgroup.cpuUsagePercent(try cpuCoreCount())) |percent| return percent;
+    }
     const current = try readCpuStat(host_proc) orelse return 0.001;
 
     sample_mutex.lock();
@@ -1688,7 +1694,9 @@ fn isNumericCpuValue(value: []const u8) bool {
     return value.len != 0;
 }
 
+/// BasicInfo 路径的内存总量。容器内取 cgroup 限额，避免节点详情显示宿主机规格。
 fn memInfo() !common.MemInfo {
+    if (linux_cgroup.readLimitedRam(false)) |ram| return ram;
     return memInfoFromPath("/proc/meminfo", .{});
 }
 
@@ -1698,6 +1706,9 @@ pub const MemMode = struct {
 };
 
 fn memInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
+    if (options.host_proc.len == 0) {
+        if (linux_cgroup.readLimitedRam(options.memory_include_cache)) |ram| return ram;
+    }
     const path = try procPath(std.heap.page_allocator, options.host_proc, "meminfo");
     defer std.heap.page_allocator.free(path);
     return memInfoFromPath(path, .{ .include_cache = options.memory_include_cache, .report_raw_used = options.memory_report_raw_used });
@@ -1724,6 +1735,13 @@ pub const ProcMemInfo = struct {
 };
 
 fn memAndSwapInfoWithOptions(options: common.SnapshotOptions) !MemSwapInfo {
+    // 受限 cgroup 优先：`/proc/meminfo` 是宿主机视图，32MB 容器会读到宿主机
+    // 的 1.89GB。`host_proc` 非空时尊重调用方指定的 `/proc`。
+    if (options.host_proc.len == 0) {
+        if (linux_cgroup.readLimitedRam(options.memory_include_cache)) |ram| {
+            return .{ .ram = ram, .swap = linux_cgroup.readLimitedSwap() orelse common.MemInfo{} };
+        }
+    }
     var buf: [16 * 1024]u8 = undefined;
     const bytes = readSmallProcFile(options.host_proc, "meminfo", &buf) orelse return .{ .ram = .{}, .swap = .{} };
     return .{
@@ -1774,7 +1792,9 @@ fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
     return parseMemInfo(bytes, mode);
 }
 
+/// BasicInfo 路径的 swap 总量。容器内取 cgroup 限额。
 fn swapInfo() !common.MemInfo {
+    if (linux_cgroup.readLimitedSwap()) |swap| return swap;
     return swapInfoWithRoot("");
 }
 

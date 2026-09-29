@@ -137,6 +137,7 @@ pub fn build(b: *std.Build) void {
         "test/disk_filter_test.zig",
         "test/network_filter_test.zig",
         "test/cpu_proc_test.zig",
+        "test/linux_cgroup_test.zig",
         "test/task_test.zig",
         "test/ping_test.zig",
         "test/windows_process_test.zig",
@@ -278,6 +279,13 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
+    const platform_linux_cgroup = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux_cgroup.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addCompatImports(platform_linux_cgroup, compat_module, net_module);
+    tests.root_module.addImport("platform_linux_cgroup", platform_linux_cgroup);
     addCompatImports(platform_linux, compat_module, net_module);
     platform_linux.addImport("debug", debug_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
