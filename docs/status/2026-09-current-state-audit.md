@@ -85,6 +85,41 @@
 - **[P3-new] `v2_seen_event_ids` 无界增长**
   - [`src/protocol/report_ws.zig:29`](../../src/protocol/report_ws.zig#L29) 的事件去重集合在进程生命周期内只增不减。长期运行且事件量大的部署会缓慢抬升常驻内存，与 AGENTS.md §4.4 的内存治理目标存在张力。建议加容量上限或按时间窗淘汰。
 
+### 4.4 已完成：cgroup v2 容器感知指标（2026-09-30）
+
+- **问题**：容器内 `/proc/meminfo` 与 `/proc/stat` 是**宿主机视图**。实测一个 32MB 的 podman 小容器读到宿主机的 1.89GB 内存与全局 CPU 计数，面板显示的规格完全失真。
+- **实现**：[`src/platform/linux_cgroup.zig`](../../src/platform/linux_cgroup.zig) 改读 cgroup v2 的配额与累计用量，接入 [`linux.zig`](../../src/platform/linux.zig) 的 `cpuUsage`、`memAndSwapInfoWithOptions`、`memInfoWithOptions`、`memInfo`、`swapInfo` 五处。
+
+  | 指标 | 数据源 | 实测验证 |
+  | :--- | :--- | :--- |
+  | `mem_total` | `memory.max` | `33554432`（32 MiB），取代宿主机 1.89 GB |
+  | `ram.used` | `memory.current` − `memory.stat.file` + `shmem` | `23846912 − 7151616 = 16695296`，与 htop 公式逐字节吻合 |
+  | `cpu.usage` | `cpu.stat` 的 `usage_usec` 差值 | 归一化分母 `cores=2.00 quota_cores=0.00` |
+  | `swap` | `memory.swap.current` | 无限额时上限取宿主机，used 保留容器换出量 |
+  | `disk` | **不变** | 见 4.5，机制上不可解 |
+
+- **启用门控**：以 `memory.max` 为有限值作为自门控信号。裸机与无限额 cgroup 的 `memory.max` 为 `max`，**行为与旧版完全一致**，不影响非容器部署。
+  - 不用容器标识判断：podman 默认 `--cgroupns=private` 时 `/proc/self/cgroup` 为 `0::/`，`detectContainerFromCgroup` 靠 `/podman-` 匹配会失效。
+  - 不复用 `virtualization()`：它需要 fork `systemd-detect-virt`，违反 AGENTS.md §4.3。
+- **CPU 归一化**：`min(quota_cores, host_cores)`。有配额时 100% = 用满自己那份额度；`cpu.max = max`（无限额）时退化为整机核数，与宿主机口径一致。`usage_usec` 无 idle 概念，必须自行取 wall clock 时间差——这是与 `/proc/stat` 路径（jiffy 差值算比例、不需要时钟）的关键差异。
+- **内存口径**：`--memory-include-cache=false`（默认）走 htop 口径扣 page cache；为 `true` 时取 `memory.current` 全量。两者都正确，仅口径不同。
+- **测试**：[`test/linux_cgroup_test.zig`](../../test/linux_cgroup_test.zig) 15 例，样本取自真实 podman 容器实测值（`cpu.max=max 100000`、`memory.max=33554432`、`memory.current=17739776`、`file=5849088`、`usage_usec=140580959`），含裸机回退契约断言。
+
+**开发过程中修正的自身错误**（均由容器实测暴露）：
+
+1. `cpuUsagePercent` 最初未加 `cgroupIsLimited()` 门控，与文档声明的「裸机行为完全不变」矛盾，已补齐。
+2. `readSwapSample` 在 `swap.max=max` 时**先于**读取 `swap.current` 就提前返回，导致 swap 恒为 0。
+3. 文件名写成裸的 `swap.current` / `swap.max`。cgroup v2 实际为 `memory.swap.current` / `memory.swap.max`（带 `memory.` 前缀），裸名是未落地的提案命名。已加注释标注此坑。
+4. 曾把上述失败误判为「内核 < 5.7 无 cgroup swap 能力」。实测内核为 `7.1.8+deb13-cloud-amd64`，接口齐备，与内核版本无关。
+
+### 4.5 机制限制：容器磁盘无法修正
+
+`/sys/fs/cgroup` 下**不存在磁盘容量控制器**（只有 memory / cpu / pids / io 类接口，`io` 限的是带宽与 IO 权重，不是容量）。podman 的 overlay 根目录建在宿主机文件系统上，`statfs` 必然返回宿主机磁盘容量。
+
+实测该容器 `/` 为 overlay，`lowerdir`/`upperdir` 均位于宿主 `/home/admin/.local/share/containers/storage/`，容量 58.8G。
+
+**这是容器机制本身的限制，不是采集缺陷。** 要在面板上体现容器磁盘配额，只能改用 loopback 镜像文件、ZFS/btrfs 子卷 quota 或带配额的卷。本项目**不做虚假修正**（AGENTS.md 红线 7）。
+
 ---
 
 ## 5. 验证记录（2026-09-30）

@@ -27,22 +27,26 @@ git merge upstream/main                 # 合并更新
 
 ---
 
-## 2. ⚠️ 自更新与安装脚本仍指向上游
+## 2. ⚠️ 自更新已指向本 fork，但安装脚本仍指向上游
 
-**这是 fork 后最容易踩的坑。** 源码已经是我们自己的，但下列位置仍硬编码 `luodaoyi/komari-zig-agent`：
+**已完成**：`src/version.zig` 的 `repo` 已改为 `JunqiangWang-1997/komari-zig-agent`，自更新不会再拉上游二进制。`test/bootstrap_test.zig` 的守卫断言同步更新。
 
-- `src/version.zig` 的 `repo` 常量 —— 决定自更新去哪个仓库查 Release
+**仍未修改**，下列位置硬编码 `luodaoyi/komari-zig-agent`：
+
 - `install.sh` / `replace.sh` / `install.ps1` / `update-binary.sh` 的下载地址与代理池
 - `README.md` 中 `replace.sh` 的 curl 地址（还额外 pin 到了某个 commit SHA，会静默过期）
 
-**后果**：如果直接发布本仓库的 Release，已安装的 agent 仍会去拉**上游**的二进制，等于用别人的代码覆盖我们的修改。
+**后果**：通过 `install.sh` / `replace.sh` 安装的仍是**上游**二进制，与本 fork 的源码（含 cgroup 容器感知指标）不一致。
 
-在真正基于本 fork 迭代之前，需要先决定：
+**处理建议**：本 fork 的推荐部署方式是直接下载 Release 资产：
 
-1. 是否把 `version.repo` 改为本仓库（会影响所有已部署 agent 的自更新来源）；
-2. `README.md` 里 pin 到 commit SHA 的 `replace.sh` curl 地址改为跟随分支（否则用户拿不到脚本修复）。
+```sh
+wget -O agent https://github.com/JunqiangWang-1997/komari-zig-agent/releases/download/v0.1.51-cgroup.1/komari-agent-linux-amd64
+wget -O SHA256SUMS https://github.com/JunqiangWang-1997/komari-zig-agent/releases/download/v0.1.51-cgroup.1/SHA256SUMS
+sha256sum -c SHA256SUMS && chmod +x agent
+```
 
-这两项都**尚未修改**，因为它们同时影响自更新行为与安装脚本分发，属于需要显式决策的改动。
+若要让安装脚本也指向本 fork，需同步修改四处脚本的下载地址与代理池——这属于分发渠道决策，尚未进行。
 
 ---
 
@@ -169,6 +173,7 @@ zig build -Dtarget=x86_64-windows-gnu    -Doptimize=ReleaseSmall
 
 以下差异已在 [`docs/status/2026-09-current-state-audit.md`](status/2026-09-current-state-audit.md) 记录，此处仅作速查：
 
+- **容器内 CPU / 内存 / swap 已支持 cgroup v2 感知**（`src/platform/linux_cgroup.zig`），以 `memory.max` 为有限值作为自门控，裸机行为不变。**磁盘无法修正**——cgroup 没有磁盘容量控制器，overlay 根目录的 `statfs` 必然返回宿主机容量，需改用 loopback 镜像或 ZFS/btrfs 子卷 quota
 - `freebsd.zig` / `darwin.zig` **仍 fork 外部命令**（`sysctl`/`netstat`/`df`/`vm_stat`/`ifconfig`），尚未原生化，不存在 `getifaddrs`/`statfs` 调用
 - `gpu.zig` **只解析 `nvidia-smi` 的 CSV 输出，无 NVML 绑定**
 - Windows 终端**未启用 ConPTY**，不支持 Resize，`pty_windows.zig` 已在 `src/third_party/` 中但未接入 `build.zig`
