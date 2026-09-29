@@ -19,7 +19,7 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
   <img alt="Systems" src="https://img.shields.io/badge/systems-Linux%20%7C%20FreeBSD%20%7C%20macOS%20%7C%20Windows-2ea043" />
   <img alt="Linux Architectures" src="https://img.shields.io/badge/Linux%20arch-11%20targets-0969da" />
   <img alt="Release Assets" src="https://img.shields.io/badge/release%20assets-20%20binaries-8250df" />
-  <img alt="Distro Matrix" src="https://img.shields.io/badge/distro%20matrix-Debian%2FUbuntu%2FKali%2FRedHat%2FOpenWrt%2FRPiOS%2FSynology-1f883d" />
+  <img alt="Distro Matrix" src="https://img.shields.io/badge/distro%20matrix-Debian%2FUbuntu%2FFedora%2FAlma%2FOpenWrt%2FRPiOS%2FSynology-1f883d" />
   <img alt="Security" src="https://img.shields.io/badge/security-SHA256SUMS%20%2B%20rollback-a371f7" />
   <img alt="Zig" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white" />
 </p>
@@ -30,10 +30,10 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 
 - 功能兼容：官方 Go agent `1.2.60` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现；继续保留可选 Cloudflare Access 凭据支持。
 - 上游增量：已吸收 `Snapshot-2607270914` 的非 root systemd user 安装和 Windows NVIDIA 详细 GPU 指标，并继续支持更早加入的 Linux `loong64` 构建与安装。
-- 支持系统：Linux、FreeBSD、macOS、Windows；Linux 覆盖 Debian/Ubuntu/Kali、Fedora/CentOS Stream/Rocky/Alma、OpenWrt、Raspberry Pi OS profile、Synology DSM profile。
+- 支持系统：Linux、FreeBSD、macOS、Windows；Linux 覆盖 Debian/Ubuntu、Fedora/Alma、OpenWrt、Raspberry Pi OS profile、Synology DSM profile。
 - Release 资产：自动构建 20 个二进制，其中 Linux 11 架构：`amd64`、`arm64`、`386`、`arm`、`mips`、`mipsel`、`mips64`、`mips64el`、`riscv64`、`s390x`、`loong64`。
-- 自动化测试：Ubuntu、macOS、Windows 原生单测；Debian/Ubuntu/Kali 和红帽系容器单测；FreeBSD VM 单测；OpenWrt、Raspberry Pi OS、Synology DSM profile 与主流 Linux 发行版 agent 启动烟测；Linux 多架构 QEMU agent 启动烟测。
-- 测试覆盖率：GitHub Actions 使用 kcov 强制 `100.00%` 行覆盖率门槛。
+- 自动化测试：Ubuntu、macOS、Windows 原生单测；Debian/Ubuntu、Fedora/Alma 容器单测；FreeBSD VM 单测；OpenWrt、Raspberry Pi OS、Synology DSM profile 与主流 Linux 发行版（含 CentOS 7）agent 启动烟测；Linux 多架构 QEMU agent 启动烟测。
+- 覆盖率门禁（**范围有限**）：CI 通过 kcov 采集覆盖率并以 `100.00%` 为门槛，但采集仅运行 `test/coverage_test.zig` 这一个测试二进制，该文件只 import `protocol_ip`，实际衡量范围仅 `src/protocol/ip.zig` 一个模块，**不是 `src/` 全量行覆盖率**。其余测试目标不产生覆盖率数据。详见 [`docs/status/2026-09-current-state-audit.md`](docs/status/2026-09-current-state-audit.md)。
 - 安全情况：Release 产物生成 `SHA256SUMS`；安装、替换、纯二进制更新、自更新均校验下载内容；下载、校验或预检失败不会覆盖原二进制；CI 使用固定版本 Zig 与固定哈希下载，主要 GitHub actions 固定到提交 SHA。
 - 功能兼容：100% 全部实现；旧 checklist 已移除，后续以 CI 与 Release 验收为准。
 - Zig：0.16.0。
@@ -50,7 +50,7 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 - 更安全更新：安装、替换、纯二进制更新、自更新均校验 SHA256；自更新流式落盘后校验，失败不覆盖原二进制；替换失败可回滚。
 - 更适合国内网络：安装、替换、纯二进制更新、自更新支持 GitHub 代理池，可显式指定代理，减少国内机器拉取失败。
 - 更广兼容：保持官方 Go agent 参数和 Komari 协议兼容，同时发布 Linux 11 架构及 Windows、FreeBSD、macOS 资产。
-- 更严测试：CI 覆盖多发行版、多架构、FreeBSD、OpenWrt/RPiOS/Synology profile，单测覆盖率门禁为 `100.00%`。
+- 更广测试面：CI 覆盖多发行版（Debian/Ubuntu/Fedora/Alma 容器）、多架构 QEMU、FreeBSD VM、OpenWrt/RPiOS/Synology profile。注意覆盖率门禁的采集范围有限，详见「状态」一节。
 - 更低运维风险：Release 产物有 `SHA256SUMS`，CI 固定 Zig 版本与下载哈希，脚本先预检二进制再替换服务。
 
 ## 性能对比

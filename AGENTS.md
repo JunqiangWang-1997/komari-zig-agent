@@ -27,12 +27,12 @@
 | `src/net.zig` | 跨平台 Socket 抽象、套接字超时（SO_RCVTIMEO/SO_SNDTIMEO）控制及超时冒烟诊断。 |
 | `src/thread_stacks.zig` | 独立 Worker 线程（TLS、Terminal、Update）栈空间尺寸常量定义（防止栈溢出）。 |
 | `src/protocol/` | **通信与协议交互层**：<br>• `http.zig` / `raw_conn.zig`: 原生 HTTP/1.1、TLS 握手、系统 CA 动态探测、CF Access 鉴权。<br>• `ws_client.zig` / `report_ws.zig`: WebSocket 客户端、加锁并发安全发送、心跳保活、指令分发。<br>• `basic_info.zig`: 基础信息采集上报与去 `kernel_version` 的降级回退机制。<br>• `v2.zig` / `v2_state.zig`: Komari v2 JSON-RPC 2.0 协议规范支持与事件拉取。<br>• `task.zig` / `ping.zig`: 远程 Shell 执行与 ICMP/TCP/HTTP Ping 探测。<br>• `autodiscovery.zig` / `ip.zig`: 自动发现注册与公网 IP 嗅探。 |
-| `src/platform/` | **跨平台指标采集**：<br>• `provider.zig`: 平台抽象与调度入口。<br>• `linux.zig`: Linux 原生采集（直接读取 `/proc`、系统调用，零 sleep 采样）。<br>• `freebsd.zig` / `darwin.zig`: BSD 与 macOS 原生采集（`sysctl`、`getifaddrs`、`statfs`）。<br>• `windows.zig`: Win32 API 硬件与系统指标采集（CPU、内存、磁盘、网卡等）。<br>• `gpu.zig`: NVIDIA GPU 指标（NVML / nvidia-smi）。 |
+| `src/platform/` | **跨平台指标采集**：<br>• `provider.zig`: 平台抽象与调度入口。<br>• `linux.zig`: Linux 原生采集（直接读取 `/proc`、系统调用，零 sleep 采样），唯一使用 `statfs` 的平台。<br>• `freebsd.zig` / `darwin.zig`: **仍为 fork 外部命令实现**（`sysctl`/`uname`/`netstat`/`df`/`vm_stat`/`ifconfig`/`mount -p`），尚未原生化，**不存在 `getifaddrs`/`statfs` 调用**；详见 `docs/status/2026-09-current-state-audit.md` §3.2。<br>• `windows.zig`: Win32 API 硬件与系统指标采集（CPU、内存、磁盘、网卡等），物理核心数与详细 GPU 走 PowerShell CIM 子进程。<br>• `gpu.zig`: NVIDIA GPU 指标，**仅解析 `nvidia-smi` 输出的 CSV，无 NVML 绑定**；子进程调用点在 `linux.zig` / `windows.zig`。 |
 | `src/report/` | **报表与持久化**：<br>• `report.zig`: 周期报表数据聚合与 JSON 序列化。<br>• `netstatic.zig`: 月度流量统计持久化（`net_static.json`），包含流量结转、重置日计算与损坏容错。 |
 | `src/terminal/` | Web SSH / 终端会话管理：Linux/macOS 基于 zigpty，FreeBSD 基于 openpty，Windows 使用 PowerShell + stdin/stdout pipe fallback（未启用 ConPTY，勿宣称已完成）。 |
 | `src/update.zig` | 自更新逻辑（GitHub Release 检查、SHA256SUMS 校验、流式落盘、无损替换、退出码 42）。 |
 | `src/compat/` | Zig 标准库跨版本兼容抽象层（文件、进程、网络、时间、POSIX 封装）。 |
-| `build.zig` | 跨平台构建、构建选项（version、crash_trace 等）、20 目标构建矩阵、单元测试组织。 |
+| `build.zig` | 跨平台构建、构建选项（version、crash_trace、coverage）、单元测试组织。**注意：20 目标矩阵不在此文件**，实际维护在 `build_all.sh` / `build_all.ps1` 与 `.github/workflows/{build,release}.yml`。 |
 
 ---
 
@@ -45,7 +45,7 @@
 3. **主循环严禁因常规网络错误崩溃**：严禁在 `main.zig` 或 `report_ws.zig` 的常规上报与心跳链路上使用致命 `try`。网络瞬断绝不能导致进程退出（Issue #9 教训：防止 OpenWrt `procd` / systemd 陷入 Crash Loop）。
 4. **指标采样热路径绝对零阻塞**：严禁在 CPU、网络等指标采集函数中调用 `std.time.sleep()`！必须通过系统计数器做 Delta 差值计算。
 5. **安全校验与更新完整性**：自更新与安装脚本必须完整校验 `SHA256SUMS`；必须先落盘校验再原子替换二进制；必须支持国内 GitHub 代理池回退与失败回滚。
-6. **文档注释门禁门槛（>= 80%）**：生产源码（`src/**/*.zig`，排除 `*_test.zig`）必须维持 `//!` 或 `///` 注释覆盖率不低于 80%（门禁脚本：`python3 scripts/check_comment_coverage.py src 80`）。
+6. **文档注释门禁门槛（>= 80%）**：生产源码（`src/**/*.zig`，排除 `*_test.zig`）中，**至少 80% 的文件**必须包含 Zig 文档注释 `//!` 或 `///`。注意统计口径：门禁脚本判定的是「该文件是否含至少一条文档注释」这一布尔值，并非按行统计注释密度，因此 80% **不代表** 80% 的代码行有注释。门禁脚本：`python3 scripts/check_comment_coverage.py src 80`，细则见 `docs/code-comments.md`。
 7. **真实状态原则**：未完全支持的平台特性（如 Windows PTY）应客观标记或返回未支持，严禁虚构实现或宣称已完成。
 
 ---
@@ -113,9 +113,10 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall
 ./komari-agent --debug-log --endpoint ... --token ...
 # 或环境变量：AGENT_DEBUG_LOG=true
 
-# 内置诊断子命令
-komari-agent --command list_disk                                     # 检查磁盘与挂载点识别
-komari-agent --command check_mem                                      # 检查内存计算与模式详情
+# 内置诊断子命令（注意：是位置参数，不是 --command 开关）
+komari-agent list-disk                                         # 检查磁盘与挂载点识别
+komari-agent check-mem                                         # 检查内存计算与模式详情
+komari-agent socket-timeout-smoke                              # 套接字超时冒烟诊断
 komari-agent ping-test <icmp|tcp|http> <target> [custom_dns] [icmp_mode] # 网络测速排障
 
 # 部署服务日志排查
