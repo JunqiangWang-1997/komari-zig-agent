@@ -42,7 +42,9 @@ fn snapshotOptions(cfg: config.Config) common.SnapshotOptions {
 }
 
 pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
-    return report.allocReportJson(allocator, try provider.snapshotWithOptions(snapshotOptions(cfg)));
+    const snap = try provider.snapshotWithOptions(snapshotOptions(cfg));
+    defer freeSnapshotGpuJson(snap);
+    return report.allocReportJson(allocator, snap);
 }
 
 pub fn processV2ResponseBodyForTest(allocator: std.mem.Allocator, cfg: config.Config, body: []const u8) !void {
@@ -105,17 +107,24 @@ pub fn prepareReconnectCycleForTest() void {
     v2_state.resetConnectionProtocolVersion();
 }
 
+/// Free the page-allocator GPU JSON carried by a snapshot, if any.
+///
+/// Every `provider.snapshotWithOptions` result must be released through this
+/// exactly once, after the last `report` serializer call, because the report
+/// serializers only borrow `gpu_json`.
+fn freeSnapshotGpuJson(snap: common.Snapshot) void {
+    if (snap.gpu_json.len != 0) std.heap.page_allocator.free(snap.gpu_json);
+}
+
 fn writeReportOnce(allocator: std.mem.Allocator, ws: *ws_client.Client, cfg: config.Config) !void {
     const snap = try provider.snapshotWithOptions(snapshotOptions(cfg));
-    var owns_gpu_json = true;
-    defer if (owns_gpu_json and snap.gpu_json.len != 0) std.heap.page_allocator.free(snap.gpu_json);
+    defer freeSnapshotGpuJson(snap);
 
     const protocol_version = v2_state.uploadProtocolVersion();
     var buf: [report_stack_buffer_size]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
     report.writeReportJson(&writer, snap) catch |err| switch (err) {
         error.WriteFailed => {
-            owns_gpu_json = false;
             const payload = try report.allocReportJson(allocator, snap);
             defer allocator.free(payload);
             if (protocol_version >= 2) {
@@ -354,7 +363,7 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
         .exec => {
             const args = try ExecTaskArgs.init(allocator, cfg, msg);
             errdefer args.deinit(allocator);
-            const thread = try std.Thread.spawn(.{}, runExecTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, runExecTask, .{ allocator, args });
             thread.detach();
         },
         .terminal => {
@@ -466,6 +475,7 @@ fn runExecTask(allocator: std.mem.Allocator, args: ExecTaskArgs) void {
 
 fn postV2ReportOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
     const snap = try provider.snapshotWithOptions(snapshotOptions(cfg));
+    defer freeSnapshotGpuJson(snap);
     const payload = try report.allocReportJson(allocator, snap);
     defer allocator.free(payload);
     const ack_ids = try snapshotV2AckEventIDs(allocator);
@@ -556,7 +566,7 @@ fn processV2Event(allocator: std.mem.Allocator, conn: ?*ws_client.Client, cfg: c
     if (std.mem.eql(u8, method, v2.MethodAgentExec)) {
         const p = parseV2ExecParams(allocator, params) catch return false;
         const args = ExecTaskArgs{ .cfg = cfg, .task_id = p.task_id, .command = p.command };
-        const thread = std.Thread.spawn(.{}, runExecTask, .{ allocator, args }) catch {
+        const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, runExecTask, .{ allocator, args }) catch {
             args.deinit(allocator);
             return false;
         };
