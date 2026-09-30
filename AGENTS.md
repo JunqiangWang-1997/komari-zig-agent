@@ -71,6 +71,11 @@ Linux 是主要部署场景，也是极低资源消耗的核心基石：
   thread.detach();
   ```
 - **WebSocket 并发写安全**：周期上报、Ping 任务、Task 远程命令执行处于不同线程，必须统一调用客户端封装的加锁发送方法（如 `ws_client.sendTextLocked`、`ws_client.sendJsonLocked`），严禁裸写 socket。
+- **裸系统调用的 errno 必须用 `rawErrno`（红线级，极隐蔽）**：
+  `std.os.linux.*` 的返回类型是 `usize`。而链接 libc 时（musl 与 glibc，即**全部 20 个目标**）`std.posix.errno` 绑定到 `std/c.zig` 的 `if (rc == -1) ... else .SUCCESS`；Zig **不允许**把 comptime 整数字面量 `-1` 隐式转成 `usize`（`@as(usize, -1)` 是编译错误），所以 `rc == -1` **恒为 false** —— `std.posix.errno` 对裸系统调用的返回值**一律返回 `.SUCCESS`**，成功失败不分。失败后 `@intCast(rc)` 又把 `0xFFFF...FF` 截断成 `-1`，调用方拿到「成功但 fd = -1」的结果继续跑。
+  **规则：凡解读 `std.os.linux.*` 的返回值，必须用 `compat.rawErrno(rc)`（或 `net.zig` / `zigpty` 内的同名本地 helper）；只有 `std.c.*`（有符号返回）的调用才用 `std.posix.errno`。** 详细推导见 `src/compat/posix.zig` 的 `rawErrno` 文档注释，回归测试见 `test/raw_errno_test.zig`。
+  - 真实事故：容器内无 `CAP_NET_RAW` → `socket(SOCK_RAW, IPPROTO_ICMP)` 的 EPERM 被判成功 → `ping.zig` 的 ICMP raw→datagram 降级永不触发 → 每次采样 -1 → 面板前端把负值映射为 `null` → **延迟监测图表全程空白**。同类错误还会让 `statfs` 失败被当成功，把未初始化的栈内存当磁盘数据上报。
+- **`zig build test` 必须与发布二进制同配置**：`build.zig` 的 `addTest` 已显式设置 `link_libc = true`。若测试不链接 libc，`std.posix.errno` 会解析到正确的 `std.os.linux.errno`，**整类 libc 相关 bug 对测试完全不可见** —— 这正是本 bug 长期未被测试拦住的原因。改动 `addTest` 时勿删该设置。
 
 ### 5.2 预期容错与设计行为（Review 请勿误判为 Bug）
 - **BasicInfo 出现两次相似 HTTP 调用**：`basic_info.zig` 会先尝试发送含 `kernel_version` 的完整 JSON；若旧服务端拒绝，会自动降级为不含该字段的 payload 重新发送。这是版本兼容回退策略，不是重复请求 Bug。
